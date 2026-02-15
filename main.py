@@ -31,7 +31,7 @@ TELEGRAM_TOKEN = '7677701935:AAG7ZrNWg-waRiVYCl9M_kPBDXCEmQJADGo'
 YOUTUBE_CLIENT_SECRETS_FILE = 'client_secrets.json'
 DATABASE_FILE = 'tokens.db'
 ENCRYPTION_KEY = '6b4f4d6a5823130d78a068b8ba750332856aa493d6c5b75df47ebefaae62e19f'  # Generate a key using Fernet.generate_key()
-REDIRECT_URI = os.getenv('REDIRECT_URI', 'https://youtubeuploader-ca9825a36bd8.herokuapp.com')
+REDIRECT_URI = os.getenv('REDIRECT_URI', 'https://youtubeuploader-ca9825a36bd8.herokuapp.com/oauth2callback')
 MONGODB_URI = os.getenv('MONGODB_URI', 'mongodb+srv://sakshamranjan7:8wBCaYilCTlgdNV3@cluster0.h184m7m.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0')
 LOG_CHANNEL_ID = os.getenv('-1002783627126')
 
@@ -335,3 +335,4 @@ def main():
 if __name__ == '__main__':
 
     main()
+
