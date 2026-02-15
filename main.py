@@ -1,29 +1,15 @@
 import os
-import json
 import logging
-import asyncio
+import sqlite3
 import tempfile
-import threading
+import asyncio
 import subprocess
 from pathlib import Path
-
 from cryptography.fernet import Fernet
 from pymongo import MongoClient
 
-from telegram import (
-    Update,
-    InlineKeyboardButton,
-    InlineKeyboardMarkup
-)
-from telegram.ext import (
-    Application,
-    CommandHandler,
-    MessageHandler,
-    CallbackQueryHandler,
-    ConversationHandler,
-    ContextTypes,
-    filters
-)
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, BotCommand
+from telegram.ext import Application, CommandHandler, MessageHandler, ConversationHandler, CallbackQueryHandler, filters, ContextTypes
 
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import Flow
@@ -32,221 +18,320 @@ from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
 from googleapiclient.errors import HttpError
 
-from flask import Flask, request
+from flask import Flask, request, redirect
+import threading
 
-# ===================== ENV VARIABLES ===================== #
+from dotenv import load_dotenv
 
-TELEGRAM_TOKEN = os.getenv("7677701935:AAG7ZrNWg-waRiVYCl9M_kPBDXCEmQJADGo")
-CLIENT_ID = os.environ["56955446636-cbn2rau39rdh530h9i5jnbl2iip4fsd2.apps.googleusercontent.com"]
-CLIENT_SECRET = os.environ["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"]
-REDIRECT_URI = os.environ["https://youtubeuploader-ca9825a36bd8.herokuapp.com/oauth2callback"]
-ENCRYPTION_KEY = os.environ["OiDu-9M4g7-lSkrIe1Okg_4raHFaLP-a08mmYkwe0Wc="].encode()
-MONGODB_URI = os.environ["mongodb+srv://sakshamranjan7:8wBCaYilCTlgdNV3@cluster0.h184m7m.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0"]
-LOG_CHANNEL_ID = int(os.getenv("LOG_CHANNEL_ID", "-1002783627126"))
+# Load environment variables
+load_dotenv()
 
-# ===================== CONSTANTS ===================== #
+# Constants
+TELEGRAM_TOKEN = '7677701935:AAG7ZrNWg-waRiVYCl9M_kPBDXCEmQJADGo'
+YOUTUBE_CLIENT_SECRETS_FILE = 'client_secrets.json'
+DATABASE_FILE = 'tokens.db'
+ENCRYPTION_KEY = 'OiDu-9M4g7-lSkrIe1Okg_4raHFaLP-a08mmYkwe0Wc='  # Generate a key using Fernet.generate_key()
+REDIRECT_URI = os.getenv('REDIRECT_URI', 'https://youtubeuploader-ca9825a36bd8.herokuapp.com/oauth2callback')
+MONGODB_URI = os.getenv('MONGODB_URI', 'mongodb+srv://sakshamranjan7:8wBCaYilCTlgdNV3@cluster0.h184m7m.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0')
+LOG_CHANNEL_ID = os.getenv('-1002783627126')
 
-SCOPES = ["https://www.googleapis.com/auth/youtube.upload"]
+# Animation URLs
+UPLOAD_ANIMATION_URL = 'https://media.giphy.com/media/v1.Y2lkPTc5MGI3NjExaHdvajU3ajZlc3ZhdmhqOWU4am0zYXJ6YzE1Z244eGJsM3d3emNuYSZlcD12MV9naWZzX3NlYXJjaCZjdD1n/b7d8ZzxqGw4Gpt0qfY/giphy.gif'  # Example loading animation
+WAITING_ANIMATION_URL = 'https://media.giphy.com/media/v1.Y2lkPTc5MGI3NjExbDF1MGNmMnlnczg5cXU0NnU0bmdhY21pdWZkdzNwYXZ0ODhtcXNreCZlcD12MV9naWZzX3NlYXJjaCZjdD1n/jleNxE9BsJVO8/giphy.gif'  # Example waiting animation
+PROCESSING_ANIMATION_URL = 'https://media.giphy.com/media/v1.Y2lkPTc5MGI3NjExbDF1MGNmMnlnczg5cXU0NnU0bmdhY21pdWZkdzNwYXZ0ODhtcXNreCZlcD12MV9naWZzX3NlYXJjaCZjdD1n/qb1eHxhUHLdsc/giphy.gif'  # Example processing animation
 
-UPLOAD_ANIMATION_URL = "https://media.giphy.com/media/qb1eHxhUHLdsc/giphy.gif"
-WAITING_ANIMATION_URL = "https://media.giphy.com/media/jleNxE9BsJVO8/giphy.gif"
-PROCESSING_ANIMATION_URL = "https://media.giphy.com/media/b7d8ZzxqGw4Gpt0qfY/giphy.gif"
+# YouTube API scopes
+SCOPES = ['https://www.googleapis.com/auth/youtube.upload']
 
+# Conversation states
 WAITING_FOR_VIDEO, WAITING_FOR_TITLE, WAITING_FOR_DESCRIPTION, WAITING_FOR_THUMBNAIL, WAITING_FOR_PRIVACY, WAITING_FOR_TAGS = range(6)
 
-# ===================== GLOBALS ===================== #
-
-application = None
-app = Flask(__name__)
-
-logging.basicConfig(level=logging.INFO)
+# Logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-mongo = MongoClient(MONGODB_URI)
-db = mongo.youtube_bot
+# Database setup
+mongo_client = MongoClient(MONGODB_URI)
+db = mongo_client.youtube_bot
 tokens_collection = db.tokens
 
-fernet = Fernet(ENCRYPTION_KEY)
+def init_db():
+    # MongoDB doesn't need init like SQLite
+    pass
 
-# ===================== TOKEN HELPERS ===================== #
+def encrypt_token(token):
+    f = Fernet(ENCRYPTION_KEY)
+    return f.encrypt(token.encode()).decode()
 
-def encrypt_token(data: str) -> str:
-    return fernet.encrypt(data.encode()).decode()
+def decrypt_token(encrypted_token):
+    f = Fernet(ENCRYPTION_KEY)
+    return f.decrypt(encrypted_token.encode()).decode()
 
-def decrypt_token(data: str) -> str:
-    return fernet.decrypt(data.encode()).decode()
-
-def store_token(user_id: int, creds: Credentials):
+def store_token(user_id, token):
+    encrypted = encrypt_token(token)
     tokens_collection.update_one(
-        {"user_id": user_id},
-        {"$set": {"token": encrypt_token(creds.to_json())}},
+        {'user_id': user_id},
+        {'$set': {'encrypted_token': encrypted}},
         upsert=True
     )
 
-def get_token(user_id: int):
-    doc = tokens_collection.find_one({"user_id": user_id})
-    if not doc:
-        return None
-    return Credentials.from_authorized_user_info(
-        json.loads(decrypt_token(doc["token"])),
-        SCOPES
-    )
+def get_token(user_id):
+    doc = tokens_collection.find_one({'user_id': user_id})
+    if doc:
+        return decrypt_token(doc['encrypted_token'])
+    return None
 
-# ===================== OAUTH ===================== #
+# Log to channel
+async def log_to_channel(message):
+    if LOG_CHANNEL_ID:
+        try:
+            await application.bot.send_message(chat_id=LOG_CHANNEL_ID, text=message)
+        except Exception as e:
+            logger.error(f'Failed to log to channel: {e}')
 
-def oauth_flow(state=None):
-    return Flow.from_client_config(
-        {
-            "web": {
-                "client_id": CLIENT_ID,
-                "client_secret": CLIENT_SECRET,
-                "auth_uri": "https://accounts.google.com/o/oauth2/auth",
-                "token_uri": "https://oauth2.googleapis.com/token"
-            }
-        },
-        scopes=SCOPES,
-        redirect_uri=REDIRECT_URI,
-        state=state
-    )
+# OAuth flow
+def get_credentials(user_id):
+    creds = None
+    token = get_token(user_id)
+    if token:
+        creds = Credentials.from_authorized_user_info(eval(token), SCOPES)
+    if not creds or not creds.valid:
+        if creds and creds.expired and creds.refresh_token:
+            creds.refresh(Request())
+        else:
+            flow = Flow.from_client_secrets_file(YOUTUBE_CLIENT_SECRETS_FILE, SCOPES, redirect_uri=REDIRECT_URI)
+            auth_url, _ = flow.authorization_url(prompt='consent')
+            print(f"Please go to this URL to authorize: {auth_url}")
+            # For production, this would be sent to user
+            creds = None  # Will be set by callback
+        store_token(user_id, creds.to_json())
+    return creds
 
-@app.route("/oauth2callback")
+# Flask app for production OAuth
+app = Flask(__name__)
+auth_codes = {}
+
+@app.route('/oauth2callback')
 def oauth2callback():
-    code = request.args.get("code")
-    state = request.args.get("state")
-
-    if not code or not state:
-        return "Invalid OAuth request"
-
-    flow = oauth_flow(state)
-    flow.fetch_token(code=code)
-
-    store_token(int(state), flow.credentials)
-    return "✅ Authorization successful! You can return to Telegram."
+    code = request.args.get('code')
+    state = request.args.get('state')
+    if state and code:
+        user_id = int(state)
+        flow = Flow.from_client_secrets_file(YOUTUBE_CLIENT_SECRETS_FILE, SCOPES, redirect_uri=REDIRECT_URI, state=state)
+        flow.fetch_token(code=code)
+        creds = flow.credentials
+        store_token(user_id, creds.to_json())
+    return 'Authorization successful! You can now use the bot. Close this window.'
 
 def run_flask():
-    app.run(host="0.0.0.0", port=int(os.getenv("PORT", 8080)))
+    app.run(port=8080, debug=False)
 
-# ===================== TELEGRAM ===================== #
+# Telegram handlers
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user_id = update.effective_user.id
+    keyboard = [[InlineKeyboardButton("🔑 Authorize YouTube", callback_data='authorize')]]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await update.message.reply_text('👋 Welcome! Click to authorize YouTube access.', reply_markup=reply_markup)
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    keyboard = [[InlineKeyboardButton("🔑 Authorize YouTube", callback_data="authorize")]]
-    await update.message.reply_text(
-        "👋 Welcome!\nAuthorize YouTube to upload videos.",
-        reply_markup=InlineKeyboardMarkup(keyboard)
-    )
+async def status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user_id = update.effective_user.id
+    if get_token(user_id):
+        await update.message.reply_text('✅ You are authorized. You can use /upload.')
+    else:
+        await update.message.reply_text('❌ You are not authorized. Use /start to authorize.')
 
-async def authorize_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def authorize_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
     await query.answer()
-
     user_id = query.from_user.id
-    flow = oauth_flow(str(user_id))
-    url, _ = flow.authorization_url(prompt="consent", access_type="offline")
+    flow = Flow.from_client_secrets_file(YOUTUBE_CLIENT_SECRETS_FILE, SCOPES, redirect_uri=REDIRECT_URI)
+    auth_url, _ = flow.authorization_url(prompt='consent', state=str(user_id))
+    await query.edit_message_text(f'🔗 Please authorize: {auth_url}\n✅ After authorization, send /upload to start uploading.')
 
-    await query.edit_message_text(f"🔗 Click to authorize:\n{url}")
-
-async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if get_token(update.effective_user.id):
-        await update.message.reply_text("✅ You are authorized.")
-    else:
-        await update.message.reply_text("❌ Not authorized. Use /start.")
-
-async def upload(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not get_token(update.effective_user.id):
-        await update.message.reply_text("❌ Please authorize first.")
+async def upload(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    user_id = update.effective_user.id
+    await context.bot.send_chat_action(chat_id=update.effective_chat.id, action='typing')
+    if not get_token(user_id):
+        await update.message.reply_text('❌ Please authorize YouTube first with /start.')
         return ConversationHandler.END
-
-    await update.message.reply_text("📹 Send the video file.")
-    context.user_data["user_id"] = update.effective_user.id
+    await update.message.reply_text('📹 Please send the video file.')
+    context.user_data['user_id'] = user_id
     return WAITING_FOR_VIDEO
 
-async def receive_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def receive_video(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     video = update.message.video or update.message.document
     if not video:
+        await update.message.reply_text('❌ Please send a video file.')
         return WAITING_FOR_VIDEO
-
-    await update.message.reply_animation(PROCESSING_ANIMATION_URL)
-
-    file = await video.get_file()
+    file_size_gb = video.file_size / (1024 ** 3) if video.file_size else 0
+    if file_size_gb > 1.5:
+        await update.message.reply_text('❌ File size exceeds 1.5GB limit.')
+        return WAITING_FOR_VIDEO
+    # Send processing animation
+    await update.message.reply_animation(PROCESSING_ANIMATION_URL, caption='🔄 Processing video...')
+    file = await context.bot.get_file(video.file_id)
     temp_dir = Path(tempfile.mkdtemp())
-    video_path = temp_dir / "video.mp4"
-    await file.download_to_drive(video_path)
-
-    context.user_data.update({
-        "video_path": str(video_path),
-        "temp_dir": str(temp_dir)
-    })
-
-    await update.message.reply_text("✏️ Enter title:")
+    video_path = temp_dir / 'video.mp4'
+    try:
+        await file.download_to_drive(video_path)
+        context.user_data['video_path'] = str(video_path)
+        context.user_data['temp_dir'] = str(temp_dir)
+        context.user_data['file_size'] = video.file_size / (1024 * 1024) if video.file_size else 0  # MB
+    except Exception as e:
+        logger.error(f'Failed to download video: {e}')
+        await update.message.reply_text('❌ Failed to download video. Please try sending a smaller file or try again.')
+        return WAITING_FOR_VIDEO
+    await log_to_channel(f"📹 Video received from user {update.effective_user.id}, size: {file_size_gb:.2f} GB")
+    await update.message.reply_text('✅ Video received. ✏️ Please enter the title:')
     return WAITING_FOR_TITLE
 
-async def receive_title(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data["title"] = update.message.text
-    await update.message.reply_text("📝 Enter description:")
+async def receive_title(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    context.user_data['title'] = update.message.text
+    await update.message.reply_text('📝 Please enter the description:')
     return WAITING_FOR_DESCRIPTION
 
-async def receive_description(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data["description"] = update.message.text
-    await update.message.reply_text("🏷 Enter tags (comma separated):")
+async def receive_description(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    context.user_data['description'] = update.message.text
+    await update.message.reply_text('🖼️ Please send the thumbnail image:')
+    return WAITING_FOR_THUMBNAIL
+
+async def receive_thumbnail(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    photo = update.message.photo[-1] if update.message.photo else None
+    if not photo:
+        await update.message.reply_text('❌ Please send an image for thumbnail.')
+        return WAITING_FOR_THUMBNAIL
+    file = await context.bot.get_file(photo.file_id)
+    thumbnail_path = Path(context.user_data['temp_dir']) / 'thumbnail.jpg'
+    try:
+        await file.download_to_drive(thumbnail_path)
+        context.user_data['thumbnail_path'] = str(thumbnail_path)
+    except Exception as e:
+        logger.error(f'Failed to download thumbnail: {e}')
+        await update.message.reply_text('❌ Failed to download thumbnail. Please try sending a smaller image or try again.')
+        return WAITING_FOR_THUMBNAIL
+    keyboard = [['public'], ['private']]
+    reply_markup = InlineKeyboardMarkup([[InlineKeyboardButton(text, callback_data=text) for text in row] for row in keyboard])
+    await update.message.reply_text('🔒 Choose privacy setting:', reply_markup=reply_markup)
+    return WAITING_FOR_PRIVACY
+
+async def receive_privacy(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    await query.answer()
+    context.user_data['privacy'] = query.data
+    await query.edit_message_text('🏷️ Please enter tags (comma-separated):')
     return WAITING_FOR_TAGS
 
-async def receive_tags(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    data = context.user_data
-    creds = get_token(data["user_id"])
-
-    youtube = build("youtube", "v3", credentials=creds)
-
-    body = {
-        "snippet": {
-            "title": data["title"],
-            "description": data["description"],
-            "tags": update.message.text.split(","),
-            "categoryId": "22"
-        },
-        "status": {"privacyStatus": "public"}
-    }
-
-    media = MediaFileUpload(data["video_path"], resumable=True)
-
-    try:
-        youtube.videos().insert(
-            part="snippet,status",
-            body=body,
-            media_body=media
-        ).execute()
-        await update.message.reply_text("✅ Upload successful!")
-    except HttpError as e:
-        await update.message.reply_text(f"❌ Upload failed: {e}")
-
+async def receive_tags(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    tags = [tag.strip() for tag in update.message.text.split(',')]
+    context.user_data['tags'] = tags
+    # Send progress message
+    progress_message = await update.message.reply_text("🪢 Uploading To Youtube\n┃\n┣[░░░░░░░░░░] » \n┣• PERCENTAGE ➜ 0.00%\n┣• TIME LEFT ➜ Calculating...\n┖• ESTIMATED ➜ Calculating...")
+    success = await upload_to_youtube(context.user_data, progress_message)
+    if success:
+        await progress_message.edit_text("🪢 Uploading To Youtube\n┃\n┣[██████████] » \n┣• PERCENTAGE ➜ 100.00%\n┣• TIME LEFT ➜ 0m, 0s\n┖• ESTIMATED ➜ Done")
+    else:
+        await progress_message.edit_text("❌ Upload failed. Please try again.")
+    # Cleanup
+    temp_dir = Path(context.user_data['temp_dir'])
+    for file in temp_dir.iterdir():
+        file.unlink()
+    temp_dir.rmdir()
     return ConversationHandler.END
 
-# ===================== MAIN ===================== #
+def create_progress_bar(percentage):
+    filled = int(percentage / 10)
+    bar = '█' * filled + '░' * (10 - filled)
+    return f"[{bar}]"
+
+async def upload_to_youtube(data, progress_message):
+    user_id = data['user_id']
+    await log_to_channel(f"🚀 Starting upload for user {user_id}, title: {data['title']}")
+    creds = get_credentials(user_id)
+    youtube = build('youtube', 'v3', credentials=creds)
+    body = {
+        'snippet': {
+            'title': data['title'],
+            'description': data['description'],
+            'tags': data['tags'],
+            'categoryId': '22'  # People & Blogs
+        },
+        'status': {
+            'privacyStatus': data['privacy']
+        }
+    }
+    file_size_mb = data.get('file_size', 0)
+    media = MediaFileUpload(data['video_path'], chunksize=1024*1024, resumable=True)  # 1MB chunks
+    try:
+        request = youtube.videos().insert(part='snippet,status', body=body, media_body=media)
+        response = None
+        while response is None:
+            status, response = await asyncio.to_thread(request.next_chunk)
+            if status:
+                progress = status.progress()
+                percentage = progress * 100
+                progress_bar = create_progress_bar(percentage)
+                time_left = "Estimating..."  # Hard to calculate accurately
+                estimated = f"{file_size_mb:.2f} MB"
+                text = f"🪢 Uploading To Youtube\n┃\n┣{progress_bar} » \n┣• PERCENTAGE ➜ {percentage:.2f}%\n┣• TIME LEFT ➜ {time_left}\n┖• ESTIMATED ➜ {estimated}"
+                await progress_message.edit_text(text)
+        video_id = response['id']
+        # Set thumbnail (optional, may fail if channel not verified)
+        try:
+            youtube.thumbnails().set(videoId=video_id, media_body=MediaFileUpload(data['thumbnail_path'])).execute()
+        except HttpError as e:
+            logger.warning(f'Failed to set thumbnail: {e}. Video uploaded without custom thumbnail.')
+        await log_to_channel(f"✅ Upload successful for user {user_id}, video ID: {video_id}")
+        return True
+    except HttpError as e:
+        logger.error(f'YouTube API error: {e}')
+        await log_to_channel(f"❌ Upload failed for user {user_id}: {e}")
+        return False
+
+async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    await update.message.reply_text('❌ Upload cancelled.')
+    return ConversationHandler.END
+
+async def restart(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await update.message.reply_text('🔄 Restarting bot...')
+    # Start new process
+    subprocess.Popen(['python', 'main.py'])
+    # Kill current process
+    os._exit(0)
+
+async def buy(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    keyboard = [[InlineKeyboardButton("DEVELOPER", url="https://t.me/SHIVAM_DUBBER")]]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await update.message.reply_text('💰 Contact the developer for premium features or support:', reply_markup=reply_markup)
 
 def main():
-    global application
-
-    threading.Thread(target=run_flask, daemon=True).start()
-
+    init_db()
     application = Application.builder().token(TELEGRAM_TOKEN).build()
 
-    conv = ConversationHandler(
-        entry_points=[CommandHandler("upload", upload)],
+    conv_handler = ConversationHandler(
+        entry_points=[CommandHandler('upload', upload)],
         states={
-            WAITING_FOR_VIDEO: [MessageHandler(filters.ALL, receive_video)],
-            WAITING_FOR_TITLE: [MessageHandler(filters.TEXT, receive_title)],
-            WAITING_FOR_DESCRIPTION: [MessageHandler(filters.TEXT, receive_description)],
-            WAITING_FOR_TAGS: [MessageHandler(filters.TEXT, receive_tags)],
+            WAITING_FOR_VIDEO: [MessageHandler(filters.VIDEO | filters.Document.ALL, receive_video)],
+            WAITING_FOR_TITLE: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_title)],
+            WAITING_FOR_DESCRIPTION: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_description)],
+            WAITING_FOR_THUMBNAIL: [MessageHandler(filters.PHOTO, receive_thumbnail)],
+            WAITING_FOR_PRIVACY: [CallbackQueryHandler(receive_privacy)],
+            WAITING_FOR_TAGS: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_tags)],
         },
-        fallbacks=[]
+        fallbacks=[CommandHandler('cancel', cancel)],
     )
 
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("status", status))
-    application.add_handler(CallbackQueryHandler(authorize_callback, pattern="authorize"))
-    application.add_handler(conv)
+    application.add_handler(CommandHandler('start', start))
+    application.add_handler(CommandHandler('status', status))
+    application.add_handler(CommandHandler('restart', restart))
+    application.add_handler(CommandHandler('buy', buy))
+    application.add_handler(CallbackQueryHandler(authorize_callback, pattern='authorize'))
+    application.add_handler(conv_handler)
+
+    # Start Flask in a thread for production
+    threading.Thread(target=run_flask, daemon=True).start()
 
     application.run_polling()
 
-if __name__ == "__main__":
-    main()
+if __name__ == '__main__':
 
+    main()
