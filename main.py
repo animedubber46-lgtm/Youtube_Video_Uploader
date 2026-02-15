@@ -36,7 +36,7 @@ from flask import Flask, request
 
 # ===================== ENV VARIABLES ===================== #
 
-TELEGRAM_TOKEN = os.environ["7677701935:AAG7ZrNWg-waRiVYCl9M_kPBDXCEmQJADGo"]
+TELEGRAM_TOKEN = os.getenv("7677701935:AAG7ZrNWg-waRiVYCl9M_kPBDXCEmQJADGo")
 CLIENT_ID = os.environ["56955446636-cbn2rau39rdh530h9i5jnbl2iip4fsd2.apps.googleusercontent.com"]
 CLIENT_SECRET = os.environ["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"]
 REDIRECT_URI = os.environ["https://youtubeuploader-ca9825a36bd8.herokuapp.com/oauth2callback"]
@@ -249,3 +249,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
