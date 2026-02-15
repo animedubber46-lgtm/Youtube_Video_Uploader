@@ -27,13 +27,13 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # Constants
-TELEGRAM_TOKEN = '8286971022:AAHbj2_RUkaGl1exXYM0mgFFKrfqbmWT_1A'
+TELEGRAM_TOKEN = '7677701935:AAG7ZrNWg-waRiVYCl9M_kPBDXCEmQJADGo'
 YOUTUBE_CLIENT_SECRETS_FILE = 'client_secrets.json'
 DATABASE_FILE = 'tokens.db'
-ENCRYPTION_KEY = 'gyYr7u7upZkOfoS5kugD4l0uYSj9Z1Qc_mA_UNhrn2Y='  # Generate a key using Fernet.generate_key()
-REDIRECT_URI = os.getenv('REDIRECT_URI', 'http://localhost:8080/oauth2callback')
-MONGODB_URI = os.getenv('MONGODB_URI', 'mongodb://localhost:27017/youtube_bot')
-LOG_CHANNEL_ID = os.getenv('LOG_CHANNEL_ID')
+ENCRYPTION_KEY = '6b4f4d6a5823130d78a068b8ba750332856aa493d6c5b75df47ebefaae62e19f'  # Generate a key using Fernet.generate_key()
+REDIRECT_URI = os.getenv('REDIRECT_URI', 'https://youtubeuploader-ca9825a36bd8.herokuapp.com')
+MONGODB_URI = os.getenv('MONGODB_URI', 'mongodb+srv://sakshamranjan7:8wBCaYilCTlgdNV3@cluster0.h184m7m.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0')
+LOG_CHANNEL_ID = os.getenv('-1002783627126')
 
 # Animation URLs
 UPLOAD_ANIMATION_URL = 'https://media.giphy.com/media/v1.Y2lkPTc5MGI3NjExaHdvajU3ajZlc3ZhdmhqOWU4am0zYXJ6YzE1Z244eGJsM3d3emNuYSZlcD12MV9naWZzX3NlYXJjaCZjdD1n/b7d8ZzxqGw4Gpt0qfY/giphy.gif'  # Example loading animation
@@ -333,4 +333,5 @@ def main():
     application.run_polling()
 
 if __name__ == '__main__':
+
     main()
